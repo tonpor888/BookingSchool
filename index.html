@@ -78,6 +78,7 @@
       schools: {},   // id -> {name, province, level, createdBy, createdAt}
       bookings: {},  // schoolId -> [array of {teacher, datetime, createdAt, createdBy}]
       users: {},     // id -> {username, password, role, firstName, lastName, createdAt}
+      history: {},   // id -> {type, schoolId, schoolName, details, createdBy, createdAt}
       loading: true,
       error: ''
     };
@@ -113,7 +114,8 @@
       state.loading = true; render();
       db.ref('schools').on('value', snap => { state.schools = snap.val() || {}; render(); });
       db.ref('bookings').on('value', snap => { state.bookings = snap.val() || {}; render(); });
-      db.ref('users').on('value', snap => { state.users = snap.val() || {}; state.loading = false; render(); });
+      db.ref('users').on('value', snap => { state.users = snap.val() || {}; render(); });
+      db.ref('history').on('value', snap => { state.history = snap.val() || {}; state.loading = false; render(); });
     }
 
     // -------------- Helpers --------------
@@ -173,6 +175,25 @@
     function myBookingListArray(){
       if(!state.user) return [];
       return bookingListArray().filter(b => (b.createdBy || '') === (state.user.username || ''));
+    }
+    function myHistoryArray(){
+      if(!state.user) return [];
+      return Object.entries(state.history).map(([id, h])=>({ id, ...h }))
+        .filter(h => (h.createdBy || '') === (state.user.username || ''))
+        .sort((a,b)=> (new Date(b.createdAt||0)) - (new Date(a.createdAt||0)));
+    }
+    async function addHistory(type, schoolId, details = ''){
+      if(!state.user) return;
+      const school = state.schools[schoolId] || {};
+      const id = uid();
+      await db.ref('history/'+id).set({
+        type,
+        schoolId,
+        schoolName: school.name || 'โรงเรียน',
+        details,
+        createdBy: state.user.username,
+        createdAt: new Date().toISOString()
+      });
     }
     function getSchoolBookings(schoolId){
       const bookings = state.bookings[schoolId];
@@ -280,7 +301,7 @@
               <button class="w-full bg-primary-600 hover:bg-primary-700 text-white rounded-lg py-2.5 font-semibold">เข้าสู่ระบบ</button>
             </form>
             <div class="mt-4 text-xs text-slate-500 leading-5">
-              ต้องการเปิดบัญชีผู้ใช้กรุณาติดต่อผู้ดูแลระบบ<br>
+              หากต้องการสร้างบัญชีผู้ใช้กรุณาติดต่อผู้ดูแลระบบ
             </div>
           </div>
         </section>
@@ -366,7 +387,7 @@
                 <div class="border border-primary-100 rounded-xl p-4 bg-white" data-user-id="${u.id}">
                   <div class="font-semibold text-primary-900">${u.firstName || ''} ${u.lastName || ''} <span class="text-xs text-slate-500">(${u.username})</span></div>
                   <div class="text-sm text-slate-600 mt-1">สิทธิ์: ${u.role==='admin'?'Admin':'User'}</div>
-                  ${u.id.startsWith('seed_') ? `<div class="text-xs text-slate-400 mt-2">บัญชีสำหรับพัฒนาระบบ (แก้ไข/ลบไม่ได้)</div>` : `
+                  ${u.id.startsWith('seed_') ? `<div class="text-xs text-slate-400 mt-2">บัญชีตัวอย่าง (แก้ไข/ลบไม่ได้)</div>` : `
                   <div class="flex items-center gap-2 mt-3">
                     <button class="editUser bg-white text-primary-700 border border-primary-200 hover:bg-primary-50 px-3 py-1.5 rounded-lg" data-id="${u.id}">แก้ไข</button>
                     <button class="deleteUser bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg" data-id="${u.id}">ลบ</button>
@@ -434,29 +455,88 @@
     function BookingPage(){
       const provinces = Array.from(new Set(schoolListArray().map(s=>s.province).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'th'));
       const myName = displayName(state.user);
+      const totalSchools = Object.keys(state.schools).length;
+      const bookedSchools = Object.keys(state.bookings).filter(schoolId => {
+        const bookings = getSchoolBookings(schoolId);
+        return bookings.length > 0;
+      }).length;
+      const availableSchools = totalSchools - bookedSchools;
+      
       return `
         <section class="space-y-6">
+          <!-- Header Stats -->
+          <div class="grid md:grid-cols-3 gap-4">
+            <div class="glass card rounded-2xl p-4">
+              <div class="text-slate-500 text-sm">โรงเรียนทั้งหมด</div>
+              <div class="text-2xl font-bold text-primary-700">${totalSchools}</div>
+            </div>
+            <div class="glass card rounded-2xl p-4">
+              <div class="text-slate-500 text-sm">โรงเรียนที่ว่าง</div>
+              <div class="text-2xl font-bold text-green-600">${availableSchools}</div>
+            </div>
+            <div class="glass card rounded-2xl p-4">
+              <div class="text-slate-500 text-sm">โรงเรียนที่มีการจอง</div>
+              <div class="text-2xl font-bold text-orange-600">${bookedSchools}</div>
+            </div>
+          </div>
+
+          <!-- Search and Filter -->
           <div class="glass card rounded-2xl p-6">
-            <h3 class="text-xl font-bold text-primary-800 mb-4">การจองโรงเรียน</h3>
-            <div class="grid md:grid-cols-4 gap-3">
+            <h3 class="text-xl font-bold text-primary-800 mb-4">หน้าการจองโรงเรียน</h3>
+            <div class="grid md:grid-cols-4 gap-3 mb-4">
               <div class="md:col-span-2">
-                <input id="searchInput" class="w-full border border-primary-200 rounded-lg px-4 py-2" placeholder="ค้นหาโรงเรียนหรือจังหวัด...">
+                <label class="block text-sm text-slate-600 mb-1">ค้นหาโรงเรียน</label>
+                <input id="searchInput" class="w-full border border-primary-200 rounded-lg px-4 py-2" placeholder="พิมพ์ชื่อโรงเรียนหรือจังหวัด...">
               </div>
               <div>
+                <label class="block text-sm text-slate-600 mb-1">กรองตามจังหวัด</label>
                 <select id="provinceFilter" class="w-full border border-primary-200 rounded-lg px-4 py-2">
                   <option value="">ทุกจังหวัด</option>
                   ${provinces.map(p=>`<option>${p}</option>`).join('')}
                 </select>
               </div>
-              <div class="text-sm text-slate-600 flex items-center">
-                ผู้ใช้ปัจจุบัน: <span class="ml-1 font-medium">${myName || state.user?.username || '-'}</span>
+              <div class="flex flex-col justify-end">
+                <div class="text-sm text-slate-600 bg-primary-50 rounded-lg p-3">
+                  <div class="font-medium text-primary-800">ผู้ใช้ปัจจุบัน:</div>
+                  <div class="text-primary-700">${myName || state.user?.username || '-'}</div>
+                </div>
               </div>
+            </div>
+            
+            <!-- Instructions -->
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <h4 class="font-semibold text-blue-800 mb-2">📋 วิธีการจองโรงเรียน</h4>
+              <ul class="text-sm text-blue-700 space-y-1">
+                <li>• ค้นหาโรงเรียนที่ต้องการจาก รายการด้านล่าง</li>
+                <li>• กรอกชื่อผู้จอง (ถ้าไม่กรอก ระบบจะใช้ชื่อของคุณ)</li>
+                <li>• เลือกวันและเวลาที่ต้องการไปแนะแนว</li>
+                <li>• กดปุ่ม "จองโรงเรียนนี้" เพื่อยืนยันการจอง</li>
+                <li>• โรงเรียนที่มีสีเขียว = ว่าง, สีส้ม = มีการจองแล้ว</li>
+              </ul>
             </div>
           </div>
 
+          <!-- School List -->
           <div class="glass card rounded-2xl p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h4 class="text-lg font-semibold text-primary-800">รายการโรงเรียน</h4>
+              <div class="flex items-center gap-4 text-sm">
+                <div class="flex items-center gap-2">
+                  <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                  <span class="text-slate-600">ว่าง</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <div class="w-3 h-3 bg-orange-500 rounded-full"></div>
+                  <span class="text-slate-600">มีการจอง</span>
+                </div>
+              </div>
+            </div>
             <div id="schoolList" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-            <div id="noResults" class="hidden text-center text-slate-500 py-8">ไม่พบโรงเรียนที่ค้นหา</div>
+            <div id="noResults" class="hidden text-center text-slate-500 py-8">
+              <div class="text-4xl mb-2">🔍</div>
+              <div>ไม่พบโรงเรียนที่ค้นหา</div>
+              <div class="text-sm mt-1">ลองเปลี่ยนคำค้นหาหรือเลือกจังหวัดอื่น</div>
+            </div>
           </div>
         </section>
       `;
@@ -464,6 +544,8 @@
 
     function MyBookingsPage(){
       const list = myBookingListArray().sort((a,b)=> (new Date(b.datetime||0)) - (new Date(a.datetime||0)));
+      const historyList = myHistoryArray();
+      
       return `
         <section class="space-y-6">
           <div class="glass card rounded-2xl p-6">
@@ -472,7 +554,12 @@
               <input id="myBookingSearch" class="w-64 max-w-full border border-primary-200 rounded-lg px-3 py-2" placeholder="ค้นหาโรงเรียน...">
             </div>
           </div>
+          
+          <!-- Current Bookings -->
           <div class="glass card rounded-2xl overflow-hidden">
+            <div class="bg-primary-50 px-6 py-3 border-b border-primary-100">
+              <h4 class="font-semibold text-primary-800">การจองปัจจุบัน</h4>
+            </div>
             ${list.length ? `
               <div class="overflow-x-auto">
                 <table class="w-full">
@@ -492,6 +579,30 @@
                 </table>
               </div>
             ` : `<div class="p-6 text-slate-500 text-center">ยังไม่มีการจองของคุณ</div>`}
+          </div>
+
+          <!-- History Section -->
+          <div class="glass card rounded-2xl overflow-hidden">
+            <div class="bg-primary-50 px-6 py-3 border-b border-primary-100 flex items-center justify-between">
+              <h4 class="font-semibold text-primary-800">ประวัติการดำเนินการ</h4>
+              <div class="flex items-center gap-3">
+                <select id="historyFilter" class="border border-primary-200 rounded-lg px-3 py-1 text-sm">
+                  <option value="">ทุกประเภท</option>
+                  <option value="booking">จองโรงเรียน</option>
+                  <option value="completed">แนะแนวเสร็จสิ้น</option>
+                  <option value="rescheduled">เลื่อนการจอง</option>
+                  <option value="cancelled">ยกเลิกการจอง</option>
+                </select>
+                <input id="historySearch" class="w-48 max-w-full border border-primary-200 rounded-lg px-3 py-1 text-sm" placeholder="ค้นหาโรงเรียน...">
+              </div>
+            </div>
+            <div id="historyContainer">
+              ${historyList.length ? `
+                <div class="divide-y divide-primary-100" id="historyList">
+                  ${historyList.map(h => HistoryRow(h)).join('')}
+                </div>
+              ` : `<div class="p-6 text-slate-500 text-center">ยังไม่มีประวัติการดำเนินการ</div>`}
+            </div>
           </div>
         </section>
       `;
@@ -565,9 +676,46 @@
           <td class="px-4 py-3 text-slate-700">${row.teacher}</td>
           <td class="px-4 py-3 text-slate-600">${fmtDateTime(row.datetime)}</td>
           <td class="px-4 py-3">
-            ${canCancel ? `<button class="cancelMyBooking bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-sm" data-school-id="${row.schoolId}" data-booking-index="${bookingIndex}">ยกเลิก</button>` : `<span class="text-xs text-slate-400">ไม่สามารถยกเลิกได้</span>`}
+            ${canCancel ? `
+              <div class="flex items-center gap-1 flex-wrap">
+                <button class="completeBooking bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-sm" data-school-id="${row.schoolId}" data-booking-index="${bookingIndex}">แนะแนวเสร็จสิ้น</button>
+                <button class="rescheduleBooking bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-sm" data-school-id="${row.schoolId}" data-booking-index="${bookingIndex}">เลื่อน</button>
+                <button class="cancelMyBooking bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-sm" data-school-id="${row.schoolId}" data-booking-index="${bookingIndex}">ยกเลิก</button>
+              </div>
+            ` : `<span class="text-xs text-slate-400">ไม่สามารถจัดการได้</span>`}
           </td>
         </tr>
+      `;
+    }
+
+    function HistoryRow(history){
+      const typeConfig = {
+        booking: { icon: '📝', color: 'text-blue-700', bg: 'bg-blue-50', label: 'จองโรงเรียน' },
+        completed: { icon: '✅', color: 'text-green-700', bg: 'bg-green-50', label: 'แนะแนวเสร็จสิ้น' },
+        rescheduled: { icon: '📅', color: 'text-orange-700', bg: 'bg-orange-50', label: 'เลื่อนการจอง' },
+        cancelled: { icon: '❌', color: 'text-red-700', bg: 'bg-red-50', label: 'ยกเลิกการจอง' }
+      };
+      const config = typeConfig[history.type] || { icon: '📋', color: 'text-slate-700', bg: 'bg-slate-50', label: 'อื่นๆ' };
+      
+      return `
+        <div class="px-6 py-4 hover:bg-primary-50 flex items-center justify-between" data-history-type="${history.type}" data-history-school="${history.schoolName.toLowerCase()}">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 ${config.bg} rounded-full flex items-center justify-center">
+              <span class="text-lg">${config.icon}</span>
+            </div>
+            <div>
+              <div class="font-semibold text-primary-900">${history.schoolName}</div>
+              <div class="text-sm ${config.color} font-medium">${config.label}</div>
+              ${history.details ? `<div class="text-sm text-slate-600 mt-1">${history.details}</div>` : ''}
+              <div class="text-xs text-slate-500 mt-1">${fmtDateTime(history.createdAt)}</div>
+            </div>
+          </div>
+          <button class="deleteHistory text-red-600 hover:text-red-700 p-2" data-history-id="${history.id}" title="ลบประวัติ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+            </svg>
+          </button>
+        </div>
       `;
     }
 
@@ -664,7 +812,7 @@
             <div class="border border-primary-100 rounded-xl p-4 bg-white" data-user-id="${u.id}">
               <div class="font-semibold text-primary-900">${u.firstName || ''} ${u.lastName || ''} <span class="text-xs text-slate-500">(${u.username})</span></div>
               <div class="text-sm text-slate-600 mt-1">สิทธิ์: ${u.role==='admin'?'Admin':'User'}</div>
-              ${u.id.startsWith('seed_') ? `<div class="text-xs text-slate-400 mt-2">บัญชีสำหรับการพัฒนาระบบ (แก้ไข/ลบไม่ได้)</div>` : `
+              ${u.id.startsWith('seed_') ? `<div class="text-xs text-slate-400 mt-2">บัญชีตัวอย่าง (แก้ไข/ลบไม่ได้)</div>` : `
               <div class="flex items-center gap-2 mt-3">
                 <button class="editUser bg-white text-primary-700 border border-primary-200 hover:bg-primary-50 px-3 py-1.5 rounded-lg" data-id="${u.id}">แก้ไข</button>
                 <button class="deleteUser bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg" data-id="${u.id}">ลบ</button>
@@ -980,6 +1128,9 @@
               
               await db.ref('bookings/'+id).set(updatedBookings);
               
+              // Add to history
+              await addHistory('booking', id, `จองโดย ${teacherName} • ${fmtDateTime(data.datetime)}`);
+              
               msg.textContent = 'จองสำเร็จ';
               msg.className = 'text-sm text-green-600 formMsg';
               form.reset();
@@ -1000,6 +1151,10 @@
       if(state.route === 'my-bookings'){
         const searchEl = $('#myBookingSearch');
         const listEl = $('#myBookingList');
+        const historyFilter = $('#historyFilter');
+        const historySearch = $('#historySearch');
+        const historyContainer = $('#historyContainer');
+        
         function renderRows(){
           const q = (searchEl.value || '').toLowerCase();
           const filteredList = myBookingListArray()
@@ -1007,11 +1162,19 @@
             .sort((a,b)=> (new Date(b.datetime||0)) - (new Date(a.datetime||0)));
           
           if(filteredList.length === 0){
-            listEl.closest('.glass').innerHTML = `<div class="p-6 text-slate-500 text-center">ไม่พบผลลัพธ์</div>`;
+            listEl.closest('.glass').innerHTML = `
+              <div class="bg-primary-50 px-6 py-3 border-b border-primary-100">
+                <h4 class="font-semibold text-primary-800">การจองปัจจุบัน</h4>
+              </div>
+              <div class="p-6 text-slate-500 text-center">ไม่พบผลลัพธ์</div>
+            `;
             return;
           }
           
           const tableHTML = `
+            <div class="bg-primary-50 px-6 py-3 border-b border-primary-100">
+              <h4 class="font-semibold text-primary-800">การจองปัจจุบัน</h4>
+            </div>
             <div class="overflow-x-auto">
               <table class="w-full">
                 <thead class="bg-primary-50 border-b border-primary-100">
@@ -1036,11 +1199,44 @@
           $$('.cancelMyBooking').forEach(btn=>{
             btn.addEventListener('click', ()=> openCancelMyBookingModal(btn.getAttribute('data-school-id'), btn.getAttribute('data-booking-index')));
           });
+          $$('.completeBooking').forEach(btn=>{
+            btn.addEventListener('click', ()=> openCompleteBookingModal(btn.getAttribute('data-school-id'), btn.getAttribute('data-booking-index')));
+          });
+          $$('.rescheduleBooking').forEach(btn=>{
+            btn.addEventListener('click', ()=> openRescheduleBookingModal(btn.getAttribute('data-school-id'), btn.getAttribute('data-booking-index')));
+          });
         }
+        
+        function renderHistory(){
+          const typeFilter = historyFilter?.value || '';
+          const searchQuery = (historySearch?.value || '').toLowerCase();
+          
+          const filteredHistory = myHistoryArray()
+            .filter(h => !typeFilter || h.type === typeFilter)
+            .filter(h => !searchQuery || h.schoolName.toLowerCase().includes(searchQuery));
+          
+          if(filteredHistory.length === 0){
+            historyContainer.innerHTML = `<div class="p-6 text-slate-500 text-center">ไม่พบประวัติที่ตรงกับเงื่อนไข</div>`;
+            return;
+          }
+          
+          historyContainer.innerHTML = `
+            <div class="divide-y divide-primary-100">
+              ${filteredHistory.map(h => HistoryRow(h)).join('')}
+            </div>
+          `;
+          
+          $$('.deleteHistory').forEach(btn=>{
+            btn.addEventListener('click', ()=> openDeleteHistoryModal(btn.getAttribute('data-history-id')));
+          });
+        }
+        
         searchEl.addEventListener('input', renderRows);
+        if(historyFilter) historyFilter.addEventListener('change', renderHistory);
+        if(historySearch) historySearch.addEventListener('input', renderHistory);
+        
         renderRows();
-
-
+        renderHistory();
       }
 
       if(state.route === 'bookings'){
@@ -1386,6 +1582,123 @@
       });
     }
     
+    function openCompleteBookingModal(schoolId, bookingIndex){
+      const bookings = getSchoolBookings(schoolId);
+      const booking = bookings[parseInt(bookingIndex)];
+      const school = state.schools[schoolId] || {};
+      if(!booking) return;
+      
+      const isOwner = booking.createdBy === (state.user?.username || '');
+      if(!isOwner){ alert('คุณสามารถจัดการเฉพาะการจองของตัวเองเท่านั้น'); return; }
+      
+      const modal = document.createElement('div');
+      modal.className = "fixed inset-0 z-40 flex items-center justify-center";
+      modal.innerHTML = `
+        <div class="absolute inset-0 bg-black/30"></div>
+        <div class="relative glass card rounded-2xl p-6 w-[95%] max-w-md z-10">
+          <div class="text-center">
+            <div class="w-16 h-16 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
+              <svg class="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-green-700 mb-2">แนะแนวเสร็จสิ้น</h3>
+            <p class="text-slate-700 mb-4">ยืนยันว่าการแนะแนวที่ <span class="font-semibold">${school.name || 'โรงเรียน'}</span> เสร็จสิ้นแล้ว<br>
+            ผู้จอง: ${booking.teacher} • ${fmtDateTime(booking.datetime)}</p>
+            <div class="flex items-center gap-2 justify-center">
+              <button id="confirmComplete" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg">เสร็จสิ้น</button>
+              <button id="cancelComplete" class="bg-white text-primary-700 border border-primary-200 hover:bg-primary-50 px-4 py-2 rounded-lg">ปิด</button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      $('#cancelComplete', modal).addEventListener('click', ()=> modal.remove());
+      $('#confirmComplete', modal).addEventListener('click', async ()=>{
+        // Add to history before removing booking
+        await addHistory('completed', schoolId, `ผู้จอง: ${booking.teacher} • ${fmtDateTime(booking.datetime)}`);
+        
+        // Remove specific booking from array (completed bookings are removed)
+        const updatedBookings = bookings.filter((_, index) => index !== parseInt(bookingIndex));
+        
+        if(updatedBookings.length === 0){
+          await db.ref('bookings/'+schoolId).remove();
+        } else {
+          await db.ref('bookings/'+schoolId).set(updatedBookings);
+        }
+        modal.remove();
+        navigate('my-bookings');
+      });
+    }
+
+    function openRescheduleBookingModal(schoolId, bookingIndex){
+      const bookings = getSchoolBookings(schoolId);
+      const booking = bookings[parseInt(bookingIndex)];
+      const school = state.schools[schoolId] || {};
+      if(!booking) return;
+      
+      const isOwner = booking.createdBy === (state.user?.username || '');
+      if(!isOwner){ alert('คุณสามารถจัดการเฉพาะการจองของตัวเองเท่านั้น'); return; }
+      
+      const modal = document.createElement('div');
+      modal.className = "fixed inset-0 z-40 flex items-center justify-center";
+      modal.innerHTML = `
+        <div class="absolute inset-0 bg-black/30"></div>
+        <div class="relative glass card rounded-2xl p-6 w-[95%] max-w-md z-10">
+          <h3 class="text-lg font-bold text-blue-700 mb-2">เลื่อนการจอง</h3>
+          <div class="text-sm text-slate-600 mb-4">โรงเรียน: ${school.name || 'โรงเรียน'}<br>
+          การจองเดิม: ${booking.teacher} • ${fmtDateTime(booking.datetime)}</div>
+          <form id="rescheduleForm" class="space-y-3">
+            <div>
+              <label class="block text-sm mb-1 text-slate-700">วัน เวลาใหม่</label>
+              <input name="datetime" type="datetime-local" required class="w-full border border-primary-200 rounded-lg px-3 py-2" value="${toLocalInput(booking.datetime)}">
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">เลื่อนการจอง</button>
+              <button type="button" id="closeReschedule" class="bg-white text-primary-700 border border-primary-200 hover:bg-primary-50 px-4 py-2 rounded-lg">ยกเลิก</button>
+              <span id="rescheduleMsg" class="text-sm text-slate-600"></span>
+            </div>
+          </form>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      $('#closeReschedule', modal).addEventListener('click', ()=> modal.remove());
+      $('#rescheduleForm', modal).addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const data = Object.fromEntries(new FormData(e.target).entries());
+        
+        // Check for duplicate datetime (excluding current booking)
+        const otherBookings = bookings.filter((_, index) => index !== parseInt(bookingIndex));
+        const newDateTime = data.datetime;
+        const isDuplicate = otherBookings.some(b => b.datetime === newDateTime);
+        
+        if(isDuplicate){
+          $('#rescheduleMsg', modal).textContent = 'เวลาที่เลือกมีการจองแล้ว';
+          $('#rescheduleMsg', modal).className = 'text-sm text-red-600';
+          return;
+        }
+        
+        // Update specific booking in array
+        const updatedBookings = [...bookings];
+        updatedBookings[parseInt(bookingIndex)] = {
+          ...booking,
+          datetime: data.datetime
+        };
+        
+        await db.ref('bookings/'+schoolId).set(updatedBookings);
+        
+        // Add to history
+        await addHistory('rescheduled', schoolId, `เลื่อนจาก ${fmtDateTime(booking.datetime)} เป็น ${fmtDateTime(data.datetime)}`);
+        
+        $('#rescheduleMsg', modal).textContent = 'เลื่อนการจองแล้ว';
+        $('#rescheduleMsg', modal).className = 'text-sm text-green-600';
+        setTimeout(()=> {
+          modal.remove();
+          navigate('my-bookings');
+        }, 800);
+      });
+    }
+
     function openCancelMyBookingModal(schoolId, bookingIndex){
       const bookings = getSchoolBookings(schoolId);
       const booking = bookings[parseInt(bookingIndex)];
@@ -1412,6 +1725,9 @@
       document.body.appendChild(modal);
       $('#cancelCancelMine', modal).addEventListener('click', ()=> modal.remove());
       $('#confirmCancelMine', modal).addEventListener('click', async ()=>{
+        // Add to history before removing booking
+        await addHistory('cancelled', schoolId, `ยกเลิกการจอง: ${booking.teacher} • ${fmtDateTime(booking.datetime)}`);
+        
         // Remove specific booking from array
         const updatedBookings = bookings.filter((_, index) => index !== parseInt(bookingIndex));
         
@@ -1422,6 +1738,32 @@
         }
         modal.remove();
         navigate('my-bookings');
+      });
+    }
+
+    function openDeleteHistoryModal(historyId){
+      const history = myHistoryArray().find(h => h.id === historyId);
+      if(!history) return;
+      
+      const modal = document.createElement('div');
+      modal.className = "fixed inset-0 z-40 flex items-center justify-center";
+      modal.innerHTML = `
+        <div class="absolute inset-0 bg-black/30"></div>
+        <div class="relative glass card rounded-2xl p-6 w-[95%] max-w-md z-10">
+          <h3 class="text-lg font-bold text-red-700 mb-2">ลบประวัติ</h3>
+          <p class="text-slate-700 mb-4">ยืนยันลบประวัติ <span class="font-semibold">${history.schoolName}</span><br>
+          การดำเนินการ: ${history.type === 'booking' ? 'จองโรงเรียน' : history.type === 'completed' ? 'แนะแนวเสร็จสิ้น' : history.type === 'rescheduled' ? 'เลื่อนการจอง' : 'ยกเลิกการจอง'}</p>
+          <div class="flex items-center gap-2">
+            <button id="confirmDeleteHistory" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg">ลบ</button>
+            <button id="cancelDeleteHistory" class="bg-white text-primary-700 border border-primary-200 hover:bg-primary-50 px-4 py-2 rounded-lg">ยกเลิก</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      $('#cancelDeleteHistory', modal).addEventListener('click', ()=> modal.remove());
+      $('#confirmDeleteHistory', modal).addEventListener('click', async ()=>{
+        await db.ref('history/'+historyId).remove();
+        modal.remove();
       });
     }
 
@@ -1455,5 +1797,5 @@
       }
     })();
   </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9817889c522e1d37',t:'MTc1ODI2ODY2MS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9818160e25097dc3',t:'MTc1ODI3NDQ1NS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
